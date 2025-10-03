@@ -7,13 +7,12 @@ class ScenarioFeedAPITests(TestCase):
     def setUp(self) -> None:
         self.client = Client()
 
-    def create_scenario(self, idx: int, label: str = RiskScenario.RiskLabel.NON_COMPLIANT) -> RiskScenario:
+    def create_scenario(self, idx: int, label: bool = True) -> RiskScenario:
         return RiskScenario.objects.create(
             title=f"场景 {idx}",
             content="这是一段需要审核的AI生成内容。",
-            risk_label=label,
+            risk_label=label,  # True 表示不合规/有风险
             analysis="指出文本中潜在的风险点。",
-            technique_tip="留意涉及资金和个人信息的措辞。",
         )
 
     def test_returns_requested_number_of_scenarios(self) -> None:
@@ -29,7 +28,7 @@ class ScenarioFeedAPITests(TestCase):
         for scenario in payload["scenarios"]:
             self.assertIn("content", scenario)
             self.assertIn("analysis", scenario)
-            self.assertIn(scenario["risk_label"], dict(RiskScenario.RiskLabel.choices))
+            self.assertIsInstance(scenario["risk_label"], bool)
 
     def test_returns_available_when_count_exceeds(self) -> None:
         self.create_scenario(1)

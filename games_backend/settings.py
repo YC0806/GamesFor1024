@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
+from urllib.parse import urlparse, unquote
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -75,12 +77,86 @@ WSGI_APPLICATION = "games_backend.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+def _db_from_config():
+    """Return DATABASES['default'] from a config file that defines DATABASE_URL.
+
+    Config file path: BASE_DIR / '.env'
+    Format: a single line like `DATABASE_URL=postgres://user:pass@host:5432/dbname`
+
+    Raises ImproperlyConfigured if file missing or DATABASE_URL not set.
+    """
+
+    conf_path = BASE_DIR / ".env"
+    database_url = None
+    if not conf_path.exists():
+        raise ImproperlyConfigured(
+            "Missing .env. Please create it with a DATABASE_URL entry."
+        )
+    try:
+        for raw in conf_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.upper().startswith("DATABASE_URL="):
+                database_url = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    except Exception as exc:
+        raise ImproperlyConfigured(f"Failed to read .env: {exc}") from exc
+
+    if not database_url:
+        raise ImproperlyConfigured("DATABASE_URL not configured in .env")
+
+    parsed = urlparse(database_url)
+    scheme = parsed.scheme.lower()
+
+    engine_map = {
+        "postgres": "django.db.backends.postgresql",
+        "postgresql": "django.db.backends.postgresql",
+        "postgis": "django.db.backends.postgresql",
+        "mysql": "django.db.backends.mysql",
+        "mariadb": "django.db.backends.mysql",
+        "sqlite": "django.db.backends.sqlite3",
+        "sqlite3": "django.db.backends.sqlite3",
     }
-}
+
+    engine = engine_map.get(scheme)
+    if not engine:
+        raise ImproperlyConfigured(f"Unsupported DATABASE_URL scheme: {scheme}")
+
+    if engine.endswith("sqlite3"):
+        # For sqlite, path may be like sqlite:///path/to/db.sqlite3 or sqlite://:memory:
+        path = parsed.path or ""
+        if path.startswith("/"):
+            name = unquote(path)
+        else:
+            name = ":memory:" if path == ":memory:" else str(BASE_DIR / "db.sqlite3")
+        return {"ENGINE": engine, "NAME": name}
+
+    return {
+        "ENGINE": engine,
+        "NAME": unquote(parsed.path.lstrip("/")),
+        "USER": unquote(parsed.username or ""),
+        "PASSWORD": unquote(parsed.password or ""),
+        "HOST": parsed.hostname or "",
+        "PORT": str(parsed.port or ""),
+    }
+
+    # unreachable
+    raise ImproperlyConfigured("DATABASE_URL parsing failed")
+
+
+DATABASES = {"default": _db_from_config()}
+
+# Fail fast if database is unreachable
+def _ensure_db_connection():
+    from django.db import connections
+    try:
+        conn = connections["default"]
+        conn.ensure_connection()
+    except Exception as exc:  # django.db.utils.OperationalError and others
+        raise ImproperlyConfigured(f"Database connection failed: {exc}") from exc
+
+_ensure_db_connection()
 
 
 # Password validation

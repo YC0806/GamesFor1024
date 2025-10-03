@@ -30,7 +30,6 @@ def scenario_feed(request):
             "content": scenario.content,
             "risk_label": scenario.risk_label,
             "analysis": scenario.analysis,
-            "technique_tip": scenario.technique_tip,
         }
         for scenario in selected
     ]
