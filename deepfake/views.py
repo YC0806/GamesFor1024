@@ -1,5 +1,3 @@
-import random
-
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 
@@ -29,19 +27,12 @@ def question_feed(request):
 
     payload = []
     for question in selected_questions:
-        images = [
-            {"path": question.real_image_path, "label": "real"},
-            {"path": question.fake_image_path, "label": "fake"},
-        ]
-        random.shuffle(images)
-
         payload.append(
             {
                 "id": question.id,
-                "prompt": question.prompt,
-                "images": images,
-                "key_flaw": question.key_flaw,
-                "technique_tip": question.technique_tip,
+                "real_img": question.real_img,
+                "ai_img": question.ai_img,
+                "analysis": question.analysis or "",
             }
         )
 

@@ -3,3 +3,4 @@ __pycache__/
 db.sqlite3
 *.sqlite3
 .env
+RISKHUNETER活动素材.csv

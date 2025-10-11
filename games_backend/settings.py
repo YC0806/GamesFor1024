@@ -17,6 +17,36 @@ from django.core.exceptions import ImproperlyConfigured
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+_ENV_CACHE = None
+
+
+def _load_env_config():
+    conf_path = BASE_DIR / ".env"
+    if not conf_path.exists():
+        raise ImproperlyConfigured("Missing .env. Please create it with required entries.")
+    data = {}
+    try:
+        for raw in conf_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            data[key.strip()] = value.strip().strip('"').strip("'")
+    except Exception as exc:
+        raise ImproperlyConfigured(f"Failed to read .env: {exc}") from exc
+    return data
+
+
+def _get_env_setting(key, default=None, *, required=False):
+    global _ENV_CACHE
+    if _ENV_CACHE is None:
+        _ENV_CACHE = _load_env_config()
+    value = _ENV_CACHE.get(key)
+    if value is None or value == "":
+        value = default
+    if required and (value is None or value == ""):
+        raise ImproperlyConfigured(f"{key} not configured in .env")
+    return value
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
@@ -41,6 +71,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "deepfake",
     "riskhunter",
+    "mbtispy",
 ]
 
 MIDDLEWARE = [
@@ -86,25 +117,7 @@ def _db_from_config():
     Raises ImproperlyConfigured if file missing or DATABASE_URL not set.
     """
 
-    conf_path = BASE_DIR / ".env"
-    database_url = None
-    if not conf_path.exists():
-        raise ImproperlyConfigured(
-            "Missing .env. Please create it with a DATABASE_URL entry."
-        )
-    try:
-        for raw in conf_path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.upper().startswith("DATABASE_URL="):
-                database_url = line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
-    except Exception as exc:
-        raise ImproperlyConfigured(f"Failed to read .env: {exc}") from exc
-
-    if not database_url:
-        raise ImproperlyConfigured("DATABASE_URL not configured in .env")
+    database_url = _get_env_setting("DATABASE_URL", required=True)
 
     parsed = urlparse(database_url)
     scheme = parsed.scheme.lower()
@@ -193,9 +206,22 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [
+    BASE_DIR / "Resources",
+]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# Redis configuration for game caches
+REDIS_URL = _get_env_setting("REDIS_URL", default="redis://127.0.0.1:6379/0")
+try:
+    MBTISPY_SESSION_TTL = int(_get_env_setting("MBTISPY_SESSION_TTL", default="7200"))
+except (TypeError, ValueError) as exc:
+    raise ImproperlyConfigured("MBTISPY_SESSION_TTL must be an integer.") from exc
+MBTISPY_SESSION_PREFIX = _get_env_setting("MBTISPY_SESSION_PREFIX", default="mbtispy:session:")
