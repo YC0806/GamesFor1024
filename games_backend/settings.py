@@ -225,3 +225,9 @@ try:
 except (TypeError, ValueError) as exc:
     raise ImproperlyConfigured("MBTISPY_SESSION_TTL must be an integer.") from exc
 MBTISPY_SESSION_PREFIX = _get_env_setting("MBTISPY_SESSION_PREFIX", default="mbtispy:session:")
+MBTISPY_SESSION_LOCK_PREFIX = _get_env_setting("MBTISPY_SESSION_LOCK_PREFIX", default="mbtispy:lock:")
+try:
+    MBTISPY_LOCK_TIMEOUT = int(_get_env_setting("MBTISPY_LOCK_TIMEOUT", default="5"))
+    MBTISPY_LOCK_WAIT = int(_get_env_setting("MBTISPY_LOCK_WAIT", default="5"))
+except (TypeError, ValueError) as exc:
+    raise ImproperlyConfigured("MBTISPY lock settings must be integers.") from exc
