@@ -55,24 +55,32 @@ python manage.py runserver
 
 ## 导入 Deepfake 数据
 
-`import_deepfake_csv.py` 可将 `Resources/deepfake/deepfake_data.csv` 文件中的题目导入数据库。脚本不依赖 Django，可直接使用 PyMySQL 连接数据库。
+`import_deepfake_csv.py` 可将 Deepfake 相关 CSV 导入数据库，支持“真实 vs AI”配对题与“三选一”识别题。脚本不依赖 Django，可直接使用 PyMySQL 连接数据库。
 
 ```bash
 # 默认读取项目根目录下 .env 的 DATABASE_URL
 python import_deepfake_csv.py
 
-# 指定数据库、CSV、目标表等参数
+# 指定数据库、CSV、目标表等参数（导入配对题）
 python import_deepfake_csv.py \
+  --dataset pairs \
   --database-url mysql://user:pass@127.0.0.1:3306/1024 \
   --csv-path Resources/deepfake/deepfake_data.csv \
-  --table deepfake_deepfakequestion \
+  --table deepfake_deepfakepair \
   --truncate
+
+# 导入三选一题型
+python import_deepfake_csv.py \
+  --dataset selection \
+  --csv-path Resources/deepfake/deepfake_data_select.csv \
+  --table deepfake_deepfakeselection
 ```
 
 常用参数说明：
+- `--dataset`：`pairs`（默认，导入问答配对题）或 `selection`（导入三选一题）
 - `--database-url`：可选，覆盖 `.env` 中的 `DATABASE_URL`
-- `--csv-path`：CSV 文件路径（默认 `Resources/deepfake/deepfake_data.csv`）
-- `--table`：目标表名（默认 `deepfake_deepfakequestion`）
+- `--csv-path`：CSV 文件路径（默认根据 `--dataset` 自动选择）
+- `--table`：目标表名（默认根据 `--dataset` 自动选择）
 - `--truncate`：导入前清空目标表
 - `--dry-run`：仅检查 CSV，不写入数据库
 
@@ -98,6 +106,66 @@ python import_deepfake_csv.py \
 ```
 
 当数据库中题目数量少于 `count` 时，接口会返回全部可用题目；当数据库为空或参数非法时，会返回相应的错误信息。
+
+- 请求：`GET /deepfake/selection/?count=<题组数量>`
+- 参数：`count`（可选，默认为 1），表示需要返回的选择题组数；每组包含三张图片，其中一张为 AI 生成、两张为真实图片，随机构成并包含分析提示字段
+- 响应示例：
+
+```json
+{
+  "count": 2,
+  "groups": [
+    {
+      "index": 1,
+      "images": [
+        {
+          "id": 1,
+          "img_path": "static/deepfake/09_yes.png",
+          "ai_generated": true,
+          "analysis": "暂无"
+        },
+        {
+          "id": 24,
+          "img_path": "static/deepfake/10_no.jpg",
+          "ai_generated": false,
+          "analysis": ""
+        },
+        {
+          "id": 27,
+          "img_path": "static/deepfake/13_no.jpg",
+          "ai_generated": false,
+          "analysis": ""
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "images": [
+        {
+          "id": 2,
+          "img_path": "static/deepfake/10_yes.png",
+          "ai_generated": true,
+          "analysis": "暂无"
+        },
+        {
+          "id": 25,
+          "img_path": "static/deepfake/11_no.jpg",
+          "ai_generated": false,
+          "analysis": ""
+        },
+        {
+          "id": 30,
+          "img_path": "static/deepfake/16_no.jpg",
+          "ai_generated": false,
+          "analysis": ""
+        }
+      ]
+    }
+  ]
+}
+```
+
+当数据库中 AI 图片数量少于请求组数或真实图片数量少于 `2 × count` 时，接口会返回 `404` 错误。
 
 ## 导入 Risk Hunter CSV 数据
 

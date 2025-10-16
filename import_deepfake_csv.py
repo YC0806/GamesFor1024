@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Standalone loader for the Deepfake questions dataset.
+Standalone loader for the Deepfake datasets.
 
-Reads a CSV whose header matches the DB fields (id, real_img, ai_img, analysis) and
-imports the rows into the `deepfake_deepfakequestion` table.
+Supports two CSV layouts:
+- Pair questions (`id, real_img, ai_img, analysis`) -> `deepfake_deepfakepair`
+- Selection challenges (`id, img_path, ai_generated, analysis`) -> `deepfake_deepfakeselection`
 
 The script is intentionally lightweight and does not import Django; it connects
 directly via PyMySQL using a DATABASE_URL provided either as a CLI argument or read
@@ -14,7 +15,7 @@ import argparse
 import csv
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 try:
@@ -24,7 +25,79 @@ except Exception as exc:  # pragma: no cover
     raise
 
 
-EXPECTED_HEADERS = ["id", "real_img", "ai_img", "analysis"]
+RowBuilder = Callable[[Dict[str, str]], Optional[Tuple[Any, ...]]]
+
+
+def _parse_bool(value: str) -> Optional[bool]:
+    text = (value or "").strip().lower()
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    if text in {"0", "false", "f", "no", "n"}:
+        return False
+    return None
+
+
+def _build_pairs_row(row: Dict[str, str]) -> Optional[Tuple[int, str, str, str]]:
+    try:
+        pk = int(row["id"])
+    except (TypeError, ValueError):
+        print(f"Skipping row with invalid id: {row}", file=sys.stderr)
+        return None
+
+    real_img = (row.get("real_img") or "").strip()
+    ai_img = (row.get("ai_img") or "").strip()
+    analysis = (row.get("analysis") or "").strip()
+
+    if not real_img or not ai_img:
+        print(
+            f"Skipping row {pk}: real_img/ai_img must not be empty.",
+            file=sys.stderr,
+        )
+        return None
+
+    return pk, real_img, ai_img, analysis
+
+
+def _build_selection_row(row: Dict[str, str]) -> Optional[Tuple[int, str, bool, str]]:
+    try:
+        pk = int(row["id"])
+    except (TypeError, ValueError):
+        print(f"Skipping row with invalid id: {row}", file=sys.stderr)
+        return None
+
+    img_path = (row.get("img_path") or "").strip()
+    if not img_path:
+        print(f"Skipping row {pk}: img_path must not be empty.", file=sys.stderr)
+        return None
+
+    flag = _parse_bool(row.get("ai_generated", ""))
+    if flag is None:
+        print(
+            f"Skipping row {pk}: ai_generated must be true/false.",
+            file=sys.stderr,
+        )
+        return None
+
+    analysis = (row.get("analysis") or "").strip()
+    return pk, img_path, flag, analysis
+
+
+DATASET_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "pairs": {
+        "expected_headers": ["id", "real_img", "ai_img", "analysis"],
+        "default_table": "deepfake_deepfakepair",
+        "default_csv": "Resources/deepfake/deepfake_data.csv",
+        "columns": ["id", "real_img", "ai_img", "analysis"],
+        "row_builder": _build_pairs_row,
+    },
+    "selection": {
+        "expected_headers": ["id", "img_path", "ai_generated", "analysis"],
+        "default_table": "deepfake_deepfakeselection",
+        "default_csv": "Resources/deepfake/deepfake_data_select.csv",
+        "columns": ["id", "img_path", "ai_generated", "analysis"],
+        "row_builder": _build_selection_row,
+    },
+}
 
 
 def _read_env_database_url(base_dir: Path) -> Optional[str]:
@@ -65,11 +138,11 @@ def _sanitize_table_name(name: str) -> str:
     return name
 
 
-def _validate_headers(fieldnames: List[str]) -> None:
+def _validate_headers(fieldnames: List[str], expected_headers: List[str]) -> None:
     normalized = [f.strip() for f in fieldnames]
-    if normalized != EXPECTED_HEADERS:
+    if normalized != expected_headers:
         raise ValueError(
-            f"CSV header must exactly match {EXPECTED_HEADERS}, got {normalized}."
+            f"CSV header must exactly match {expected_headers}, got {normalized}."
         )
 
 
@@ -80,9 +153,14 @@ def main() -> int:
         description="Import Deepfake CSV data into the database."
     )
     parser.add_argument(
+        "--dataset",
+        choices=sorted(DATASET_CONFIGS),
+        default="pairs",
+        help="Dataset type to import: 'pairs' (real vs AI) or 'selection' (2 real + 1 AI).",
+    )
+    parser.add_argument(
         "--csv-path",
-        default="Resources/deepfake/deepfake_data.csv",
-        help="Path to CSV file (default: Resources/deepfake/deepfake_data.csv)",
+        help="Path to CSV file (default depends on dataset).",
     )
     parser.add_argument(
         "--database-url",
@@ -91,8 +169,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--table",
-        default="deepfake_deepfakequestion",
-        help="Target table name (default: deepfake_deepfakequestion)",
+        help="Target table name (default depends on dataset).",
     )
     parser.add_argument(
         "--encoding",
@@ -123,7 +200,9 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    csv_path = Path(args.csv_path).expanduser()
+    config = DATASET_CONFIGS[args.dataset]
+    csv_path_str = args.csv_path or config["default_csv"]
+    csv_path = Path(csv_path_str).expanduser()
     if not csv_path.exists():
         print(f"CSV file not found: {csv_path}", file=sys.stderr)
         return 2
@@ -139,7 +218,11 @@ def main() -> int:
         print(f"Invalid DATABASE_URL: {exc}", file=sys.stderr)
         return 2
 
-    table = _sanitize_table_name(args.table)
+    table_name = args.table or config["default_table"]
+    table = _sanitize_table_name(table_name)
+    expected_headers = config["expected_headers"]
+    columns: List[str] = config["columns"]
+    row_builder: RowBuilder = config["row_builder"]
 
     try:
         with csv_path.open("r", encoding=args.encoding, newline="") as handle:
@@ -147,25 +230,13 @@ def main() -> int:
             if not reader.fieldnames:
                 print("CSV header row is missing.", file=sys.stderr)
                 return 2
-            _validate_headers(reader.fieldnames)
+            _validate_headers(reader.fieldnames, expected_headers)
 
-            rows: List[Tuple[int, str, str, str]] = []
+            rows: List[Tuple[Any, ...]] = []
             for row in reader:
-                try:
-                    pk = int(row["id"])
-                except (TypeError, ValueError):
-                    print(f"Skipping row with invalid id: {row}", file=sys.stderr)
-                    continue
-                real_img = (row.get("real_img") or "").strip()
-                ai_img = (row.get("ai_img") or "").strip()
-                analysis = (row.get("analysis") or "").strip()
-                if not real_img or not ai_img:
-                    print(
-                        f"Skipping row {pk}: real_img/ai_img must not be empty.",
-                        file=sys.stderr,
-                    )
-                    continue
-                rows.append((pk, real_img, ai_img, analysis))
+                parsed_row = row_builder(row)
+                if parsed_row is not None:
+                    rows.append(parsed_row)
     except UnicodeDecodeError as exc:
         print(
             f"Failed to decode CSV. Consider using --encoding gbk. Details: {exc}",
@@ -200,13 +271,16 @@ def main() -> int:
                 cursor.execute(f"DELETE FROM `{table}`")
 
             if rows:
+                column_list = ", ".join(columns)
+                placeholders = ", ".join(["%s"] * len(columns))
+                update_columns = [col for col in columns if col != "id"]
+                update_clause = ", ".join(
+                    f"{col} = VALUES({col})" for col in update_columns
+                )
                 sql = (
-                    f"INSERT INTO `{table}` (id, real_img, ai_img, analysis) "
-                    f"VALUES (%s, %s, %s, %s) "
-                    f"ON DUPLICATE KEY UPDATE "
-                    f"real_img = VALUES(real_img), "
-                    f"ai_img = VALUES(ai_img), "
-                    f"analysis = VALUES(analysis)"
+                    f"INSERT INTO `{table}` ({column_list}) "
+                    f"VALUES ({placeholders}) "
+                    f"ON DUPLICATE KEY UPDATE {update_clause}"
                 )
                 batch = max(1, args.batch_size)
                 for i in range(0, len(rows), batch):
