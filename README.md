@@ -164,6 +164,15 @@ python import_deepfake_csv.py \
 
 当数据库中题目数量少于 `count` 时，接口会返回全部可用题目；当数据库为空或参数非法时，会返回相应的错误信息。
 
+## Prize 抽奖
+
+- 数据导入
+  - Django 管理命令：`python manage.py import_prizes`（默认读取 `Resources/stock_data.csv`，导入前会清空 `prize_prize` 表；可传入自定义 CSV 路径）
+  - 独立脚本：`python import_prize_csv.py --csv-path Resources/stock_data.csv`（读取 `.env` 的 `DATABASE_URL`；支持 `--dry-run`、`--table` 等参数）
+- 接口
+  - `GET /prize/draw/`：串行加锁后随机抽取一件库存大于 0 的奖品，返回 `{"success": true, "prize": {"id": 1, "name": "定制工牌卡套", "stock": 499}}`
+  - `GET /prize/list/`：返回所有奖品（含 `stock=0` 项），用于后台展示库存余量
+
 ## MBTI 守护挑战接口
 
 > 依赖 Redis 存储实时对局状态。默认连接串为 `redis://127.0.0.1:6379/0`，可通过环境变量 `REDIS_URL` 覆盖。
@@ -189,16 +198,19 @@ python import_deepfake_csv.py \
   - 返回已报名玩家的编号、姓名与登记的 MBTI，用于线下互相核对
 - 查询个人身份：`GET /mbtispy/session/<session_code>/role/<player_id>/`
   - 返回玩家身份以及本场游戏的spy_mbti
-
+- 生成对话题目：`POST /mbtispy/question/`
+  - 请求体：`{"spy_mbti": "INTJ"}`，若配置了 `DEEPSEEK_API_KEY`，会调用 DeepSeek 模型生成题目；否则返回占位提示。所使用的 prompt 模板为 `"XXXX"`
+  
 ### 投票阶段
 - 主持人开启投票：`POST /mbtispy/session/<session_code>/vote/start/`
   - 仅在状态为 `ready` 时生效；若状态不符，返回 `success=false`
-- 投票：`GET /mbtispy/session/<session_code>/vote/` 或 `POST /mbtispy/session/<session_code>/vote/`
-  - `GET`：投票开启后返回房间内所有玩家的 `id` 与 `name`，便于前端展示；若投票未开始则返回 `success=false` 及提示信息
-  - `POST`：请求体可为 `{"player_id": 2, "vote_for": 1}`（投票某位玩家）或在全员都是 Spy 时使用 `{"player_id": 2, "vote_for": "all_spies"}`；若投票未开始同样返回 `success=false`
+- 投票：`GET /mbtispy/session/<session_code>/vote/<player_id>/` 或 `POST /mbtispy/session/<session_code>/vote/<player_id>/`
+  - `GET`：投票开启后返回指定玩家可见的候选列表；若投票未开始则返回 `success=false` 及提示信息
+  - `POST`：请求体可为 `{"vote_for": 1}`（投票某位玩家）或在全员都是 Spy 时使用 `{"vote_for": "all_spies"}`；若投票未开始同样返回 `success=false`
 - 结算：`GET /mbtispy/session/<session_code>/results/`
   - 若 Spy 玩家被选出，侦探阵营胜利；若 Spy 未被选出（包括平票），Spy 阵营直接胜利
   - 当全员都是 Spy（同一 MBTI）时，选择 `all_spies` 的 Spy 被判定为胜者，未选择者视为失败；返回字段会包含 `spy_winners` / `spy_losers`
+
 
 可选环境变量（如未设置则使用默认值）：
 - `MBTISPY_LOCK_TIMEOUT`：Redis 分布式锁超时（秒，默认 5）

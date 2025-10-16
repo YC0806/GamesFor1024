@@ -25,6 +25,7 @@ urlpatterns = [
     path("deepfake/", include("deepfake.urls")),
     path("riskhunter/", include("riskhunter.urls")),
     path("mbtispy/", include("mbtispy.urls")),
+    path("prize/", include("prize.urls")),
 ]
 
 if settings.DEBUG:

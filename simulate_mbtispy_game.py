@@ -17,7 +17,7 @@ import argparse
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, Union
 
 try:
     import requests
@@ -104,7 +104,17 @@ class MBTISpyClient:
 
     def ensure_vote_not_open(self, session_code: str):
         """Verify that voting endpoints reject access before host starts voting."""
-        response = self._request("GET", f"/mbtispy/session/{session_code}/vote/", {200})
+        players = self._request(
+            "GET", f"/mbtispy/session/{session_code}/players/", {200}
+        )["players"]
+        if not players:
+            raise RuntimeError("No players registered when checking vote status.")
+        first_player_id = players[0]["id"]
+        response = self._request(
+            "GET",
+            f"/mbtispy/session/{session_code}/vote/{first_player_id}/",
+            {200},
+        )
         status = response.get("status")
         if response.get("success") is False:
             print(f"[info] voting not open yet (status={status})")
@@ -118,15 +128,21 @@ class MBTISpyClient:
         print(f"[info] vote started (status={data['status']})")
 
     def get_vote_roster(self, session_code: str) -> List[Dict]:
-        data = self._request(
-            "GET",
-            f"/mbtispy/session/{session_code}/vote/",
-            {200},
+        players_payload = self._request(
+            "GET", f"/mbtispy/session/{session_code}/players/", {200}
         )
-        if not data.get("success", True):
-            raise RuntimeError(f"Unable to fetch vote roster: {data.get('message')}")
-        print(f"[info] vote roster retrieved ({len(data['players'])} players)")
-        return data["players"]
+        roster: List[Dict] = []
+        for player in players_payload.get("players", []):
+            data = self._request(
+                "GET",
+                f"/mbtispy/session/{session_code}/vote/{player['id']}/",
+                {200},
+            )
+            if not data.get("success", True):
+                raise RuntimeError(f"Unable to fetch vote options: {data.get('message')}")
+            roster.append(data["player"])
+        print(f"[info] vote roster retrieved ({len(roster)} players)")
+        return roster
 
     def poll_registration(self, session_code: str, retries: int = 5, interval: float = 0.5) -> Dict:
         for attempt in range(1, retries + 1):
@@ -148,11 +164,11 @@ class MBTISpyClient:
             time.sleep(interval)
         raise RuntimeError("Registration did not complete in time.")
 
-    def submit_vote(self, session_code: str, voter: int, target: int):
-        payload = {"player_id": voter, "vote_for": target}
+    def submit_vote(self, session_code: str, voter: int, target: Union[int, str]):
+        payload = {"vote_for": target}
         data = self._request(
             "POST",
-            f"/mbtispy/session/{session_code}/vote/",
+            f"/mbtispy/session/{session_code}/vote/{voter}/",
             {200},
             payload,
         )

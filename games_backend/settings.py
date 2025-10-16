@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     "deepfake",
     "riskhunter",
     "mbtispy",
+    "prize",
 ]
 
 MIDDLEWARE = [
@@ -231,3 +232,5 @@ try:
     MBTISPY_LOCK_WAIT = int(_get_env_setting("MBTISPY_LOCK_WAIT", default="5"))
 except (TypeError, ValueError) as exc:
     raise ImproperlyConfigured("MBTISPY lock settings must be integers.") from exc
+DEEPSEEK_BASE_URL = _get_env_setting("DEEPSEEK_BASE_URL", default="https://api.deepseek.com")
+DEEPSEEK_API_KEY = _get_env_setting("DEEPSEEK_API_KEY", default="")

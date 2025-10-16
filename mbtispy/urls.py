@@ -33,6 +33,11 @@ urlpatterns = [
         views.start_vote,
         name="start_vote",
     ),
-    path("session/<str:code>/vote/", views.vote_endpoint, name="vote"),
+    path(
+        "session/<str:code>/vote/<int:player_id>/",
+        views.vote_endpoint,
+        name="vote",
+    ),
     path("session/<str:code>/results/", views.get_results, name="get_results"),
+    path("question/", views.generate_spy_question, name="generate_spy_question"),
 ]

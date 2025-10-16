@@ -1,5 +1,8 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "http.proxy":"http://127.0.0.1:7890",
+    "https.proxy":"https://127.0.0.1:7890",
+    "http.proxyStrictSSL":false
 }

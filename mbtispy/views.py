@@ -20,6 +20,9 @@ SESSION_LOCK_TIMEOUT = getattr(settings, "MBTISPY_LOCK_TIMEOUT", 5)
 SESSION_LOCK_WAIT = getattr(settings, "MBTISPY_LOCK_WAIT", 5)
 MBTI_LETTERS = {"I", "E", "S", "N", "T", "F", "P", "J"}
 
+DEEPSEEK_BASE_URL = getattr(settings, "DEEPSEEK_BASE_URL", None)
+DEEPSEEK_API_KEY = getattr(settings, "DEEPSEEK_API_KEY", None)
+
 
 class GameStateError(Exception):
     """Raised when the game state is invalid or violates game rules."""
@@ -91,6 +94,48 @@ def _generate_code(client: redis.Redis, length: int = 6) -> str:
             return code
     raise GameStateError("Failed to create a session. Please try again later.")
 
+
+def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
+    prompt = r'''
+    你是游戏主持人题库助手。请根据输入，生成用于辨析 MBTI 的“情景化开放式问题”。
+    要求：
+    1) 每题围绕一个 MBTI 维度（axis in {EI,SN,TF,JP}），但不要直接出现“E/I/S/N/T/F/J/P”字样。
+    2) 问题必须是“情境+任务”的开放式描述，让玩家讲述做法/理由/取舍过程，避免AB二选。
+    3) 语言贴近口语，结合行业/场景口吻。
+    4) 不得提到“MBTI”“维度”“轴”等词。
+    5) 尽量与历史题去重，变化场景、人物、约束。
+    6) 返回 JSON 数组，每项包含：
+    id（string），title（string），scene（string），ask（string），axis（string）。
+    只输出 JSON 数组，不要解释。
+    '''
+
+    if DEEPSEEK_BASE_URL and DEEPSEEK_API_KEY:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                base_url=DEEPSEEK_BASE_URL,
+                api_key=DEEPSEEK_API_KEY,
+            )
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": '目标MBTI：'+ spy_mbti},
+                ],
+                stream=False
+            )
+            answer = response.choices[0].message.content
+            return {"success": True, "question": answer}
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": f"Failed to reach DeepSeek ({exc}). Please try again later.",
+            }
+    return {
+        "success": False,
+        "message": f"Could not find base url or api key of Deepseek.",
+    }
 
 def _assign_spies(players: List[Dict[str, Any]]) -> str:
     """Return spy_mbti while mutating players' roles based on MBTI distribution."""
@@ -229,12 +274,6 @@ def register_player(request, client: redis.Redis, code: str) -> JsonResponse:
         }
         players.append(player)
         player_record = player
-
-        if len(players) == session["expected_players"]:
-            session["status"] = "awaiting_confirmation"
-        else:
-            session["status"] = "registering"
-
         _save_session(client, session)
 
     return JsonResponse(
@@ -292,26 +331,34 @@ def registration_status(request, client: redis.Redis, code: str) -> JsonResponse
                 "Waiting for all players to register.",
                 {
                     "session_code": code,
-                    "status": session.get("status", "registering"),
+                    "status": session.get("status"),
                     "registered_players": len(players),
                     "expected_players": expected,
                 },
             )
 
+        if len(players) > expected:
+            raise GameStateError("Number of registered players exceeds expected count.")
+        
         roles_assigned = bool(session.get("spy_mbti"))
         if not roles_assigned:
             spy_mbti = _assign_spies(players)
             session["spy_mbti"] = spy_mbti
-            session["status"] = "ready"
+            session["status"] = "started"
             session["votes"] = {}
             session["results"] = None
             session["vote_started_at"] = None
-            _save_session(client, session)
         else:
             # Ensure status reflects readiness once roles are assigned.
-            if session.get("status") in {"registering", "awaiting_confirmation"}:
-                session["status"] = "ready"
-                _save_session(client, session)
+            if session.get("status") in {"registering", "confirming"}:
+                session["status"] = "started"
+        
+        for player in players:
+            if player["mbti"] == spy_mbti:
+                player["role"] = "spy"
+            else:
+                player["role"] = "detective"
+        _save_session(client, session)
 
     players_payload = [
         {
@@ -322,7 +369,6 @@ def registration_status(request, client: redis.Redis, code: str) -> JsonResponse
         }
         for p in session["players"]
     ]
-    roles_assigned_final = bool(session.get("spy_mbti"))
 
     return JsonResponse(
         {
@@ -332,7 +378,6 @@ def registration_status(request, client: redis.Redis, code: str) -> JsonResponse
             "registered_players": len(session["players"]),
             "expected_players": session["expected_players"],
             "spy_mbti": session.get("spy_mbti"),
-            "roles_assigned": roles_assigned_final,
             "players": players_payload,
         }
     )
@@ -346,7 +391,7 @@ def get_spy_mbti(request, client: redis.Redis, code: str) -> JsonResponse:
     if not session.get("spy_mbti"):
         return _json_pending(
             "spy_mbti has not been determined yet.",
-            {"session_code": code, "status": session.get("status", "registering")},
+            {"session_code": code, "status": session.get("status")},
         )
     return JsonResponse(
         {
@@ -394,7 +439,7 @@ def start_vote(request, client: redis.Redis, code: str) -> JsonResponse:
                 "Roles have not been assigned yet, voting cannot start.",
                 {"session_code": code, "status": session.get("status", "registering")},
             )
-        if session.get("status") != "ready":
+        if session.get("status") != "started":
             return _json_pending(
                 "Voting cannot be started from the current state.",
                 {"session_code": code, "status": session.get("status")},
@@ -418,7 +463,9 @@ def start_vote(request, client: redis.Redis, code: str) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 @_redis_guard
-def vote_endpoint(request, client: redis.Redis, code: str) -> JsonResponse:
+def vote_endpoint(
+    request, client: redis.Redis, code: str, player_id: int
+) -> JsonResponse:
     session = _load_session(client, code)
     if not session:
         return _json_error("Session does not exist.", status=404)
@@ -430,28 +477,38 @@ def vote_endpoint(request, client: redis.Redis, code: str) -> JsonResponse:
         )
 
     if request.method == "GET":
-        players = [
+        all_spies_mode = all(p["role"] == "spy" for p in session["players"])
+        players = session["players"]
+        player = next((p for p in players if p["id"] == player_id), None)
+        if not player:
+            raise GameStateError("Requested player does not exist.")
+        options = [
             {
-                "id": player["id"],
-                "name": player["name"],
+                "id": candidate["id"],
+                "name": candidate["name"],
             }
-            for player in session["players"]
+            for candidate in players
+            if candidate["id"] != player["id"]
         ]
+        if player["role"] == "spy":
+            options.append({"id": "all_spies", "name": "All players are spies"})
         return JsonResponse(
             {
                 "success": True,
                 "session_code": code,
                 "status": session["status"],
-                "players": players,
+                "player": {
+                    "id": player["id"],
+                    "name": player["name"],
+                    "role": player["role"],
+                    "options": options,
+                },
             }
         )
 
     payload = _parse_body(request)
-    voter_id = payload.get("player_id")
     raw_target = payload.get("vote_for")
 
-    if not isinstance(voter_id, int):
-        raise GameStateError("player_id must be an integer.")
     if raw_target is None:
         raise GameStateError("vote_for must be provided.")
     if isinstance(raw_target, str) and raw_target.strip().lower() == "all_spies":
@@ -461,8 +518,15 @@ def vote_endpoint(request, client: redis.Redis, code: str) -> JsonResponse:
             target_id = int(raw_target)
         except (TypeError, ValueError):
             raise GameStateError("vote_for must be an integer player id or 'all_spies'.")
+    
+    players = session["players"]
+    if not any(p["id"] == player_id for p in players):
+        raise GameStateError("Voting player does not exist.")
+    if target_id != "all_spies" and not any(p["id"] == target_id for p in players):
+        raise GameStateError("Selected target player does not exist.")
+    if player_id == target_id:
+        raise GameStateError("Cannot vote for oneself.")
 
-    total_votes = 0
     with _session_lock(client, code):
         session = _load_session(client, code)
         if not session:
@@ -470,30 +534,20 @@ def vote_endpoint(request, client: redis.Redis, code: str) -> JsonResponse:
         if session.get("status") != "voting":
             return _json_pending(
                 "Voting has not started yet.",
-                {"session_code": code, "status": session.get("status", "registering")},
+                {"session_code": code, "status": session.get("status")},
             )
 
-        players = session["players"]
-        if not any(p["id"] == voter_id for p in players):
-            raise GameStateError("Voting player does not exist.")
-        all_spies_mode = all(p["role"] == "spy" for p in players)
-        if target_id == "all_spies" and not all_spies_mode:
-            raise GameStateError("The 'all_spies' option is only available when all players are spies.")
-        if target_id != "all_spies" and not any(p["id"] == target_id for p in players):
-            raise GameStateError("Selected target player does not exist.")
-
         session.setdefault("votes", {})
-        session["votes"][str(voter_id)] = target_id
+        session["votes"][str(player_id)] = target_id
         session["results"] = None
 
         _save_session(client, session)
-        total_votes = len(session["votes"])
 
     return JsonResponse(
         {
             "success": True,
             "session_code": code,
-            "player_id": voter_id,
+            "player_id": player_id,
             "vote_for": target_id,
         }
     )
@@ -506,93 +560,122 @@ def get_results(request, client: redis.Redis, code: str) -> JsonResponse:
         session = _load_session(client, code)
         if not session:
             return _json_error("Session does not exist.", status=404)
-        if not session.get("spy_mbti"):
+        if session.get("status") != "voting":
             return _json_pending(
-                "spy_mbti has not been determined; results are unavailable.",
-                {"session_code": code, "status": session.get("status", "registering")},
+                "Voting has not started yet.",
+                {"session_code": code, "status": session.get("status")},
             )
-
+        if len(session.get("votes")) != session.get("expected_players", 0):
+            return _json_pending(
+                "Not all players have voted yet.",
+                {
+                    "session_code": code,
+                    "status": session.get("status"),
+                    "votes_received": len(session.get("votes", {})),
+                    "expected_votes": session.get("expected_players", 0),
+                },
+            )
+        
         votes: Dict[str, int] = session.get("votes", {})
-        tally: Dict[int, int] = {}
+        total: Dict[int, int] = {}
         for vote_target in votes.values():
-            tally[vote_target] = tally.get(vote_target, 0) + 1
+            total[vote_target] = total.get(vote_target, 0) + 1
 
         players = {p["id"]: p for p in session["players"]}
         all_spies_mode = all(p["role"] == "spy" for p in session["players"])
         results: Dict[str, Any] = {
-            "tally": [
+            "total": [
                 {
                     "player_id": pid,
                     "name": players[pid]["name"],
-                    "votes": tally.get(pid, 0),
+                    "votes": total.get(pid, 0),
                 }
                 for pid in sorted(players.keys())
             ],
-            "total_ballots": len(votes),
-            "expected_ballots": session["expected_players"],
-            "tie": False,
-            "winner": None,
-            "eliminated_player": None,
+            "winners": None,
+            "losers": None,
+            "message": None,
         }
-
-        if not tally:
-            results["message"] = "No votes recorded yet."
-            session["status"] = "ready"
+        if all_spies_mode:
+            winners = [
+                p["name"] for p in session["players"]
+                if session["votes"].get(str(p["id"])) == "all_spies"
+            ]
+            losers = [
+                p["name"] for p in session["players"]
+                if session["votes"].get(str(p["id"])) != "all_spies"
+            ]
+            results["winners"] = winners
+            results["losers"] = losers
+        
         else:
-            max_votes = max(tally.values())
-            top_candidates = [pid for pid, count in tally.items() if count == max_votes]
-            if all_spies_mode:
-                winners = [
-                    p["name"]
-                    for p in session["players"]
-                    if session["votes"].get(str(p["id"])) == "all_spies"
-                ]
-                losers = [
-                    p["name"]
-                    for p in session["players"]
-                    if session["votes"].get(str(p["id"])) != "all_spies"
-                ]
-                if winners:
-                    results["winner"] = "spy"
-                    results["message"] = "Spy players who selected 'all_spies' win."
-                else:
-                    results["winner"] = "spy"
-                    results["message"] = "No spy selected the 'all_spies' option. Spy team wins by default."
-                results["spy_winners"] = winners
-                results["spy_losers"] = losers
-                results["tie"] = len(top_candidates) > 1
-                results["eliminated_player"] = None
-                session["status"] = "completed"
-                session["vote_started_at"] = None
-            else:
-                if len(top_candidates) > 1:
-                    results["tie"] = True
-                    results["winner"] = "spy"
-                    results["message"] = "Vote tied. Spy team wins."
-                    session["status"] = "completed"
-                    session["vote_started_at"] = None
-                else:
-                    target = top_candidates[0]
-                    eliminated_player = players.get(target)
-                    if isinstance(target, str) and target == "all_spies":
-                        results["eliminated_player"] = None
-                        results["winner"] = "spy"
-                        results["message"] = "Spy team wins."
-                    else:
-                        results["eliminated_player"] = {
-                            "player_id": target,
-                            "name": eliminated_player["name"],
-                            "role": eliminated_player["role"],
-                        }
-                        if eliminated_player["role"] == "spy":
-                            results["winner"] = "detective"
-                            results["message"] = "Spy eliminated. Detective team wins!"
-                        else:
-                            results["winner"] = "spy"
-                            results["message"] = "Spy survives. Spy team wins!"
-                    session["status"] = "completed"
-                    session["vote_started_at"] = None
+            max_votes = max(total.values())
+            top_candidates = [pid for pid, count in total.items() if count == max_votes]
+            if len(top_candidates) > 1 and "all_spies" not in top_candidates:
+                winners = [p["name"] for p in session["players"] if p["role"] == "spy"]
+                losers = [p["name"] for p in session["players"] if p["role"] == "detective"]
+                message = "Vote tied. Spy team wins."
 
+            if len(top_candidates) > 1 and "all_spies" in top_candidates:
+                winners = []
+                losers = [p["name"] for p in session["players"]]
+                message = "Vote tied with 'all_spies'. No one wins."
+
+            elif len(top_candidates) == 1:
+                target = top_candidates[0]
+                if target == "all_spies":
+                    return _json_pending(
+                        "There is some issue with the votes. Please verify.",
+                        {"session_code": code, "status": session.get("status"), "votes": votes},
+                    )
+                elif players[target]["role"] == "spy":
+                    winners = [p["name"] for p in session["players"] if p["role"] == "detective"]
+                    losers = [p["name"] for p in session["players"] if p["role"] == "spy"]
+                    message = "Spy eliminated. Detective team wins!"
+                elif players[target]["role"] == "detective":
+                    winners = [p["name"] for p in session["players"] if p["role"] == "spy"]
+                    losers = [p["name"] for p in session["players"] if p["role"] == "detective"]
+                    message = "Spy survives. Spy team wins!"
+                else:
+                    return _json_pending(
+                        "There is some issue with the votes. Please verify.",
+                        {"session_code": code, "status": session.get("status"), "votes": votes},
+                    )
+            else:
+                return _json_pending(
+                    "There is some issue with the votes. Please verify.",
+                    {"session_code": code, "status": session.get("status"), "votes": votes},
+                )
+            
+        results["winners"] = winners
+        results["losers"] = losers
+        session["status"] = "completed"
+        session["message"] = message
         session["results"] = results
         _save_session(client, session)
     return JsonResponse({"success": True, "session_code": code, "results": results})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@_redis_guard
+def generate_spy_question(request, client: redis.Redis) -> JsonResponse:  # noqa: ARG001
+    payload = _parse_body(request)
+    spy_mbti_input = payload.get("spy_mbti")
+    spy_mbti = _normalize_mbti(spy_mbti_input)
+    generated = _generate_spy_question(spy_mbti)
+    if generated['success']:
+        return JsonResponse(
+            {
+                "success": True,
+                "spy_mbti": spy_mbti,
+                "question": generated["question"],
+            }
+        )
+    else:
+        return JsonResponse(
+            {
+                "success": False,
+                "message": generated["message"],
+            }
+        )
