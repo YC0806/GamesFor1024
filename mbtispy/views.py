@@ -4,6 +4,7 @@ import string
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
+import xml.etree.ElementTree as ET
 
 import redis
 from django.conf import settings
@@ -97,6 +98,38 @@ def _generate_code(client: redis.Redis, length: int = 6) -> str:
 
 def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
     prompt = r'''
+    <example>
+    [
+        {
+            "id": "ENTP_1",
+            "title": "头脑风暴会议中的创意火花",
+            "scene": "在一次产品创新会议上，团队正讨论如何改进一款老旧的软件，但大家意见分歧，进展缓慢。",
+            "ask": "你会如何引导讨论，激发新的想法，并确保团队能快速找到可行的解决方案？",
+            "axis": "EI"
+        },
+        {
+            "id": "ENTP_2",
+            "title": "面对模糊项目需求的策略",
+            "scene": "你接手了一个新项目，客户只给了大致方向，没有具体细节，团队对下一步感到困惑。",
+            "ask": "你打算用什么方法快速理清需求，并推动项目向前发展？",
+            "axis": "SN"
+        },
+        {
+            "id": "ENTP_3",
+            "title": "团队决策中的逻辑与情感平衡",
+            "scene": "在团队讨论中，有人提出一个基于个人情感的方案，而另一个基于数据的方案更高效但可能影响士气。",
+            "ask": "你会如何权衡这两个方案，并说服团队采纳你的建议？",
+            "axis": "TF"
+        },
+        {
+            "id": "ENTP_4",
+            "title": "应对突发机会的灵活计划",
+            "scene": "你正在执行一个严格时间表的项目，突然出现一个意外机会，可能带来巨大收益但会打乱原计划。",
+            "ask": "你如何评估这个机会，并调整你的计划来最大化整体收益？",
+            "axis": "JP"
+        }
+    ]
+    </example>
     你是游戏主持人题库助手。请根据输入，生成用于辨析 MBTI 的“情景化开放式问题”。
     要求：
     1) 每题围绕一个 MBTI 维度（axis in {EI,SN,TF,JP}），但不要直接出现“E/I/S/N/T/F/J/P”字样。
@@ -106,7 +139,7 @@ def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
     5) 尽量与历史题去重，变化场景、人物、约束。
     6) 返回 JSON 数组，每项包含：
     id（string），title（string），scene（string），ask（string），axis（string）。
-    只输出 JSON 数组，不要解释。
+    只输出 JSON 数组。
     '''
 
     if DEEPSEEK_BASE_URL and DEEPSEEK_API_KEY:
@@ -123,7 +156,10 @@ def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": '目标MBTI：'+ spy_mbti},
                 ],
-                stream=False
+                stream=False,
+                response_format={
+                    'type': 'json_object'
+                }
             )
             answer = response.choices[0].message.content
             return {"success": True, "question": answer}
@@ -136,6 +172,19 @@ def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
         "success": False,
         "message": f"Could not find base url or api key of Deepseek.",
     }
+
+def _parse_questions(answer: str) -> List[Dict[str, Any]]:
+    try:
+        questions = json.loads(answer)
+        if not isinstance(questions, list):
+            raise ValueError("Parsed questions is not a list.")
+        for q in questions:
+            if not all(key in q for key in ("id", "title", "scene", "ask", "axis")):
+                raise ValueError("One or more questions are missing required keys.")
+        return questions
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise GameStateError(f"Failed to parse generated question: {exc}, {answer}")
+
 
 def _assign_spies(players: List[Dict[str, Any]]) -> str:
     """Return spy_mbti while mutating players' roles based on MBTI distribution."""
@@ -352,6 +401,7 @@ def registration_status(request, client: redis.Redis, code: str) -> JsonResponse
             # Ensure status reflects readiness once roles are assigned.
             if session.get("status") in {"registering", "confirming"}:
                 session["status"] = "started"
+            spy_mbti = session.get("spy_mbti")
         
         for player in players:
             if player["mbti"] == spy_mbti:
@@ -560,7 +610,7 @@ def get_results(request, client: redis.Redis, code: str) -> JsonResponse:
         session = _load_session(client, code)
         if not session:
             return _json_error("Session does not exist.", status=404)
-        if session.get("status") != "voting":
+        if session.get("status") not in ["voting", "completed"]:
             return _json_pending(
                 "Voting has not started yet.",
                 {"session_code": code, "status": session.get("status")},
@@ -582,16 +632,17 @@ def get_results(request, client: redis.Redis, code: str) -> JsonResponse:
             total[vote_target] = total.get(vote_target, 0) + 1
 
         players = {p["id"]: p for p in session["players"]}
+        players_with_votes = [
+            {
+                "player_id": pid,
+                "name": players[pid]["name"],
+                "role": players[pid]["role"],
+                "votes": total.get(pid, 0),
+            }
+            for pid in sorted(players.keys())
+        ]
         all_spies_mode = all(p["role"] == "spy" for p in session["players"])
         results: Dict[str, Any] = {
-            "total": [
-                {
-                    "player_id": pid,
-                    "name": players[pid]["name"],
-                    "votes": total.get(pid, 0),
-                }
-                for pid in sorted(players.keys())
-            ],
             "winners": None,
             "losers": None,
             "message": None,
@@ -616,7 +667,7 @@ def get_results(request, client: redis.Redis, code: str) -> JsonResponse:
                 losers = [p["name"] for p in session["players"] if p["role"] == "detective"]
                 message = "Vote tied. Spy team wins."
 
-            if len(top_candidates) > 1 and "all_spies" in top_candidates:
+            elif len(top_candidates) > 1 and "all_spies" in top_candidates:
                 winners = []
                 losers = [p["name"] for p in session["players"]]
                 message = "Vote tied with 'all_spies'. No one wins."
@@ -647,8 +698,8 @@ def get_results(request, client: redis.Redis, code: str) -> JsonResponse:
                     {"session_code": code, "status": session.get("status"), "votes": votes},
                 )
             
-        results["winners"] = winners
-        results["losers"] = losers
+        results["winners"] = [player for player in players_with_votes if player["name"] in winners]
+        results["losers"] = [player for player in players_with_votes if player["name"] in losers]
         session["status"] = "completed"
         session["message"] = message
         session["results"] = results
@@ -664,14 +715,19 @@ def generate_spy_question(request, client: redis.Redis) -> JsonResponse:  # noqa
     spy_mbti_input = payload.get("spy_mbti")
     spy_mbti = _normalize_mbti(spy_mbti_input)
     generated = _generate_spy_question(spy_mbti)
+    json_question = _parse_questions(generated['question'])
+
     if generated['success']:
-        return JsonResponse(
-            {
-                "success": True,
-                "spy_mbti": spy_mbti,
-                "question": generated["question"],
-            }
-        )
+        try:
+            return JsonResponse(
+                {
+                    "success": True,
+                    "spy_mbti": spy_mbti,
+                    "question": json_question,
+                }
+            )        
+        except json.JSONDecodeError as exc:
+            return _json_error(f"Failed to decode generated question: {exc}, {generated['question']}")
     else:
         return JsonResponse(
             {

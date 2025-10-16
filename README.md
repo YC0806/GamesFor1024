@@ -32,6 +32,13 @@ DATABASE_URL=postgres://user:password@host:5432/dbname
 REDIS_URL=redis://127.0.0.1:6379/0
 MBTISPY_SESSION_TTL=7200
 MBTISPY_SESSION_PREFIX=mbtispy:session:
+MBTISPY_SESSION_LOCK_PREFIX=mbtispy:lock:
+MBTISPY_LOCK_TIMEOUT=5
+MBTISPY_LOCK_WAIT=5
+
+# DeepSeek API（可选）
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_API_KEY=sk-your-api-key
 ```
 
 2) 安装依赖（MySQL 连接方式二选一）：
@@ -284,6 +291,8 @@ python import_deepfake_csv.py \
 - `MBTISPY_LOCK_TIMEOUT`：Redis 分布式锁超时（秒，默认 5）
 - `MBTISPY_LOCK_WAIT`：获取锁的等待时间（秒，默认 5）
 - `MBTISPY_SESSION_LOCK_PREFIX`：锁 key 前缀（默认 `mbtispy:lock:`）
+- `DEEPSEEK_BASE_URL`：DeepSeek API 地址（默认 `https://api.deepseek.com`）
+- `DEEPSEEK_API_KEY`：DeepSeek API Key（默认为空，未配置时题库生成接口仅返回占位信息）
 
 ### 本地联调脚本
 
