@@ -1,0 +1,107 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>问题 {{ qid|add:1 }}</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+        body {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #4198B4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        .question-container {
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 40px 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+            z-index: 1;
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            color: #4198B4;
+            margin-bottom: 20px;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        p {
+            font-size: 1.1rem;
+            color: #333;
+            margin-bottom: 30px;
+            line-height: 1.6;
+            font-weight: 400;
+        }
+
+        button {
+            padding: 14px 32px;
+            margin: 10px;
+            font-size: 1rem;
+            font-weight: 500;
+            background-color: #4198B4;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            font-family: inherit;
+        }
+
+        button:hover {
+            background-color: #357A91;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        form {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-top: 2rem;
+        }
+
+        .background-image {
+            width: 100%;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            z-index: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="question-container">
+        <h2>问题 {{ qid|add:1 }} / {{ total }}</h2>
+        <p>{{ question.question }}</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" name="answer" value="{{ question.options.0 }}">{{ question.options.0 }}</button>
+            <button type="submit" name="answer" value="{{ question.options.1 }}">{{ question.options.1 }}</button>
+            <button type="submit" name="answer" value="{{ question.options.2 }}">{{ question.options.2 }}</button>
+        </form>
+    </div>
+    <img src="{% static 'mbtitest/background.png' %}" alt="背景图片" class="background-image">
+</body>
+</html>
+

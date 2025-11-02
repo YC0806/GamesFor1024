@@ -1,0 +1,2 @@
+"""mbtitest Django application."""
+

@@ -1,22 +1,41 @@
 # GamesFor1024
 
-后端基于 Django 框架，包含“Spot the DeepFake 深伪识图”与“Risk Hunter - AI 内容审查大挑战”小游戏的数据接口。
+GamesFor1024 是一个基于 Django 的多小游戏整合后端，涵盖以下模块：
 
-## 快速开始
+- **Spot the DeepFake**：深伪识图问答接口
+- **Risk Hunter**：AI 内容合规性挑战
+- **MBTI Spy**：多人实时推理小游戏（依赖 Redis）
+- **Prize**：抽奖库存管理
+- **MBTI Test**：全新 Django Web App（`/mbtitest/`）提供在线 MBTI 测试体验
+
+---
+
+## 1. 环境准备
+
+### 1.1 依赖安装
 
 ```bash
 pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver
 ```
 
-## 数据库配置
+`requirements.txt` 仅包含项目基础依赖（Django、Redis、requests 等）。如需连接 MySQL，请额外选择以下驱动之一：
 
-必须通过配置文件指定数据库，仅支持 `DATABASE_URL`（不读取环境变量）。若未配置或无法连接，将在启动时直接报错并终止。
+```bash
+# 方案 A：纯 Python 驱动（推荐）
+pip install PyMySQL
 
-1) 在项目根目录创建文件 `.env`，内容示例：
+# 方案 B：MySQL 原生驱动（需系统库）
+pip install mysqlclient
+```
+
+项目在 `games_backend/__init__.py` 中内置了 PyMySQL 兼容层：若检测到 `mysqlclient` 缺失但已安装 `PyMySQL`，会自动以 `MySQLdb` 方式加载。
+
+### 1.2 配置文件
+
+服务启动、导入脚本与管理命令都会读取根目录 `.env` 文件（不支持直接读取系统环境变量）。示例配置如下：
 
 ```
+# --- 数据库（必填） ---
 # PostgreSQL 示例
 DATABASE_URL=postgres://user:password@host:5432/dbname
 
@@ -25,10 +44,9 @@ DATABASE_URL=postgres://user:password@host:5432/dbname
 
 # SQLite 示例
 # DATABASE_URL=sqlite:///absolute/path/to/db.sqlite3
-# 或内存数据库
 # DATABASE_URL=sqlite://:memory:
 
-# Redis 配置
+# --- Redis（MBTI Spy 及部分缓存必需） ---
 REDIS_URL=redis://127.0.0.1:6379/0
 MBTISPY_SESSION_TTL=7200
 MBTISPY_SESSION_PREFIX=mbtispy:session:
@@ -36,39 +54,49 @@ MBTISPY_SESSION_LOCK_PREFIX=mbtispy:lock:
 MBTISPY_LOCK_TIMEOUT=5
 MBTISPY_LOCK_WAIT=5
 
-# DeepSeek API（可选）
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_API_KEY=sk-your-api-key
+# --- LLM 服务（MBTI Spy 题目生成 & MBTI Test 结果分析，可选） ---
+LLM_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=sk-your-api-key
+LLM_MODEL=deepseek-chat
 ```
 
-2) 安装依赖（MySQL 连接方式二选一）：
-
-```bash
-# 方案 A：纯 Python 驱动（推荐，易安装）
-pip install PyMySQL
-
-# 或 方案 B：原生 C 扩展（性能更好，需系统库）
-pip install mysqlclient
-```
-
-项目已在 `games_backend/__init__.py` 内置了 PyMySQL 兼容层：若未安装 `mysqlclient`，且已安装 `PyMySQL`，会自动以 `MySQLdb` 方式接入。
-
-3) 运行迁移与启动服务：
+### 1.3 数据库初始化
 
 ```bash
 python manage.py migrate
+python manage.py check  # 可选：验证配置是否完整
 python manage.py runserver
 ```
 
-## 导入 Deepfake 数据
+默认服务监听 `http://127.0.0.1:8000/`。前端可直接访问 `/mbtitest/` 体验 MBTI 测试流程。
 
-`import_deepfake_csv.py` 可将 Deepfake 相关 CSV 导入数据库，支持“真实 vs AI”配对题与“三选一”识别题。脚本不依赖 Django，可直接使用 PyMySQL 连接数据库。
+---
+
+## 2. 模块概览
+
+| 模块 | 功能 | 主要路由前缀 | 依赖 |
+| --- | --- | --- | --- |
+| DeepFake | 深伪识图题库接口 | `/deepfake/` | 数据库 |
+| Risk Hunter | AI 内容审查题库接口 | `/riskhunter/` | 数据库 |
+| MBTI Spy | Redis 状态驱动的推理游戏 | `/mbtispy/` | 数据库 + Redis + 可选 LLM |
+| Prize | 库存抽奖接口 | `/prize/` | 数据库 |
+| MBTI Test | 8 题自测 + LLM 结果分析 | `/mbtitest/` | Redis（会话）+ 可选 LLM |
+
+各模块的导入脚本与管理命令示例见下文。
+
+---
+
+## 3. DeepFake（Spot the DeepFake）
+
+### 3.1 数据导入
+
+`import_deepfake_csv.py` 支持将配对题（真假对比）或三选一题型 CSV 导入数据库，不依赖 Django。
 
 ```bash
-# 默认读取项目根目录下 .env 的 DATABASE_URL
+# 默认读取 .env 中的 DATABASE_URL
 python import_deepfake_csv.py
 
-# 指定数据库、CSV、目标表等参数（导入配对题）
+# 导入配对题
 python import_deepfake_csv.py \
   --dataset pairs \
   --database-url mysql://user:pass@127.0.0.1:3306/1024 \
@@ -76,238 +104,239 @@ python import_deepfake_csv.py \
   --table deepfake_deepfakepair \
   --truncate
 
-# 导入三选一题型
+# 导入三选一题
 python import_deepfake_csv.py \
   --dataset selection \
   --csv-path Resources/deepfake/deepfake_data_select.csv \
   --table deepfake_deepfakeselection
 ```
 
-常用参数说明：
-- `--dataset`：`pairs`（默认，导入问答配对题）或 `selection`（导入三选一题）
-- `--database-url`：可选，覆盖 `.env` 中的 `DATABASE_URL`
-- `--csv-path`：CSV 文件路径（默认根据 `--dataset` 自动选择）
-- `--table`：目标表名（默认根据 `--dataset` 自动选择）
-- `--truncate`：导入前清空目标表
-- `--dry-run`：仅检查 CSV，不写入数据库
+常用参数：
 
+- `--dataset`：`pairs`（默认）或 `selection`
+- `--table`：目标表名（默认根据题型推断）
+- `--truncate`：导入前清空表
+- `--dry-run`：仅校验 CSV，不写入数据库
 
-## 深伪识图接口
+### 3.2 API
 
-- 请求：`GET /deepfake/questions/?count=<需要的题目数量>`
-- 参数：`count`（可选，默认为 3），表示需要随机抽取的图片组数
-- 响应示例：
+- `GET /deepfake/questions/?count=<int>`：返回指定数量的真假配对题，默认 3 组
+- `GET /deepfake/selection/?count=<int>`：返回三选一题组，默认 1 组，需满足 AI 与真实图片数量条件
 
-```json
-{
-  "count": 2,
-  "questions": [
-    {
-      "id": 1,
-      "real_img": "Resources/deepfake/01_no.jpg",
-      "ai_img": "Resources/deepfake/01_yes.png",
-      "analysis": "1. 左侧沙发扶手与坐垫接缝处存在 1 像素宽的错位；2. 茶几木纹在中心点呈现 2×2 像素的重复噪点；3. 右侧玻璃护栏固定螺丝出现镜像反转；4. 地面瓷砖缝隙在右下角突然变宽 0.5mm；5. 背景窗格倒影呈现非物理规律的波浪扭曲。"
-    }
-  ]
-}
-```
+当题库不足或参数非法时，会返回对应的错误信息。
 
-当数据库中题目数量少于 `count` 时，接口会返回全部可用题目；当数据库为空或参数非法时，会返回相应的错误信息。
+---
 
-- 请求：`GET /deepfake/selection/?count=<题组数量>`
-- 参数：`count`（可选，默认为 1），表示需要返回的选择题组数；每组包含三张图片，其中一张为 AI 生成、两张为真实图片，随机构成并包含分析提示字段
-- 响应示例：
+## 4. Risk Hunter
 
-```json
-{
-  "count": 2,
-  "groups": [
-    {
-      "index": 1,
-      "images": [
-        {
-          "id": 1,
-          "img_path": "static/deepfake/09_yes.png",
-          "ai_generated": true,
-          "analysis": "暂无"
-        },
-        {
-          "id": 24,
-          "img_path": "static/deepfake/10_no.jpg",
-          "ai_generated": false,
-          "analysis": ""
-        },
-        {
-          "id": 27,
-          "img_path": "static/deepfake/13_no.jpg",
-          "ai_generated": false,
-          "analysis": ""
-        }
-      ]
-    },
-    {
-      "index": 2,
-      "images": [
-        {
-          "id": 2,
-          "img_path": "static/deepfake/10_yes.png",
-          "ai_generated": true,
-          "analysis": "暂无"
-        },
-        {
-          "id": 25,
-          "img_path": "static/deepfake/11_no.jpg",
-          "ai_generated": false,
-          "analysis": ""
-        },
-        {
-          "id": 30,
-          "img_path": "static/deepfake/16_no.jpg",
-          "ai_generated": false,
-          "analysis": ""
-        }
-      ]
-    }
-  ]
-}
-```
+### 4.1 数据导入
 
-当数据库中 AI 图片数量少于请求组数或真实图片数量少于 `2 × count` 时，接口会返回 `404` 错误。
-
-## 导入 Risk Hunter CSV 数据
-
-提供两种方式将 CSV 导入数据库（适配常见中文/英文表头）。
-
-- 方式 A（独立脚本，不依赖 Django）：
+- **独立脚本**（适配多种 CSV 表头）：
 
   ```bash
-  # 使用根目录的独立工具脚本（默认读取 .env 中的 DATABASE_URL，或通过 --database-url 指定）
-  python import_riskhunter_csv.py "RISKHUNETER活动素材.csv" \
+  python import_riskhunter_csv.py "RISKHUNTER.csv" \
     --encoding utf-8-sig \
     --delimiter , \
     --truncate
   ```
 
-  可选参数：
-  - `--database-url`：MySQL 连接串，如 `mysql://user:password@host:3306/dbname`
-  - `--table`：目标表名（默认 `riskhunter_riskscenario`）
-  - `--encoding`：CSV 编码（默认 `utf-8-sig`；如需可用 `gbk`）
-  - `--delimiter`：分隔符（默认 `,`）
-  - `--truncate`：导入前清空表
-  - `--batch-size`：批量大小（默认 500）
-  - `--dry-run`：只解析不写库
-
-- 方式 B（Django 管理命令）：
+- **Django 管理命令**：
 
   ```bash
-  python manage.py import_riskhunter_csv "RISKHUNETER活动素材.csv" \
+  python manage.py import_riskhunter_csv "RISKHUNTER.csv" \
     --encoding utf-8-sig \
     --delimiter , \
     --truncate
   ```
 
-字段映射：
+字段映射示例：
+
 - 标题：`title`、`标题`、`场景`、`题目`
-- 内容：`content`、`文本`、`内容`、`题干`、`生成内容`
-- 解析：`analysis`、`解析`、`答案解析`、`说明`、`点评`
-- 标签：`risk_label`、`label`、`标签`、`是否合规`、`判定`、`正确答案`、`结论`
+- 内容：`content`、`文本`、`题干`、`生成内容`
+- 解析：`analysis`、`解析`、`答案解析`
+- 标签：`risk_label`、`是否合规`、`正确答案`、`判定`
 
-`risk_label` 映射到布尔：
-- True（不合规/有风险）：`不合规`、`非合规`、`违规`、`风险`、`有风险`、`客户数据泄露`、`数据泄露`、`虚假信息`、`non_compliant`、`data_leak`、`misinformation`、`1`、`true`、`yes`、`否`（针对“是否合规”场景）等。
-- False（合规/安全）：`合规`、`内容合规`、`安全`、`compliant`、`0`、`false`、`no`、`是`（针对“是否合规”场景）。
+标签值会自动映射为布尔：`不合规/风险/false/no/否` 等均会被解析。
 
-## Risk Hunter 接口
+### 4.2 API
 
-- 请求：`GET /riskhunter/scenarios/?count=<需要的题目数量>`
-- 参数：`count`（可选，默认为 5），表示需要随机抽取的题目组数
-- 响应示例：
+- `GET /riskhunter/scenarios/?count=<int>`：随机返回指定数量题目（默认 5）
 
-```json
-{
-  "count": 2,
-  "scenarios": [
-    {
-      "id": 1,
-      "title": "场景 1",
-      "content": "这是一段需要审核的AI生成内容。",
-      "risk_label": true,
-      "analysis": "文本提及不合规的宣传措辞。"
-    }
-  ]
-}
-```
+---
 
-当数据库中题目数量少于 `count` 时，接口会返回全部可用题目；当数据库为空或参数非法时，会返回相应的错误信息。
+## 5. MBTI Spy
 
-## Prize 抽奖
+Redis 用于存储房间会话、并发锁与投票状态。核心流程：
 
-- 数据导入
-  - Django 管理命令：`python manage.py import_prizes`（默认读取 `Resources/stock_data.csv`，导入前会清空 `prize_prize` 表；可传入自定义 CSV 路径）
-  - 独立脚本：`python import_prize_csv.py --csv-path Resources/stock_data.csv`（读取 `.env` 的 `DATABASE_URL`；支持 `--dry-run`、`--table` 等参数）
-- 接口
-  - `GET /prize/draw/`：串行加锁后随机抽取一件库存大于 0 的奖品，返回 `{"success": true, "prize": {"id": 1, "name": "定制工牌卡套", "stock": 499}}`
-  - `GET /prize/list/`：返回所有奖品（含 `stock=0` 项），用于后台展示库存余量
+1. `POST /mbtispy/session/` 创建房间（固定 3 名玩家）
+2. `POST /mbtispy/session/<code>/register/` 玩家报名（填写昵称与 MBTI）
+3. `GET /mbtispy/session/<code>/register/status/` 主持人确认
+4. `GET /mbtispy/session/<code>/players/` & `/role/<player_id>/` 查看身份
+5. `POST /mbtispy/question/` 生成游戏问题（需配置 LLM 服务才会返回 AI 生成题）
+6. `POST /mbtispy/session/<code>/vote/start/` 开启投票
+7. `POST /mbtispy/session/<code>/vote/<player_id>/` 投票
+8. `GET /mbtispy/session/<code>/results/` 查看胜负
 
-## MBTI 守护挑战接口
+若三名玩家 MBTI 相同，则全员为 Spy，可通过 `vote_for="all_spies"` 结算。详情请参考 `mbtispy/views.py` 注释或使用 `simulate_mbtispy_game.py` 模拟器。
 
-> 依赖 Redis 存储实时对局状态。默认连接串为 `redis://127.0.0.1:6379/0`，可通过环境变量 `REDIS_URL` 覆盖。
+### 5.1 问题生成
 
-- 创建房间：`POST /mbtispy/session/`
-  - 游戏固定 3 名玩家，若传入 `expected_players` 会报错
-  - 返回：`{"session_code": "ABC123", "expected_players": 3}`
+配置 `LLM_API_KEY` 后，`POST /mbtispy/question/` 会调用外部 LLM 生成包含四个维度问题的 JSON。未配置时返回占位提示信息。
 
-### 注册阶段
-- 玩家注册：`POST /mbtispy/session/<session_code>/register/`
-  - 请求体：`{"player_name": "Alice", "mbti": "INTJ"}`
-  - 返回玩家编号（`player_id`）、当前阵营（`spy` / `detective`）以及房间状态
-- 当三名玩家就位且主持人确认后，后台根据 MBTI 分布推断 `spy_mbti`（规则：三人各异则随机选其一；若两人相同则第三人所属 MBTI 为 `spy_mbti`；若三人完全相同则三人皆为 Spy）并同步玩家阵营
-  - 字段 `roles_assigned` 为 `true` 时表示 `spy_mbti` 已确定，响应中会附带该值
-  - 未达到三名玩家前，`role` 会返回 `unknown`
-
-### 游戏开始
-- 主持人确认注册：`GET /mbtispy/session/<session_code>/register/status/`
-  - 若仍在报名阶段，返回 `success=false` 及当前已注册人数；达到 3 人后将自动分配阵营、生成 `spy_mbti` 并返回 `success=true`
-- 公布 Spy MBTI：`GET /mbtispy/session/<session_code>/spy/`
-  - 用于主持人获知隐藏阵营 MBTI（不会泄露姓名）
-- 查看同场玩家：`GET /mbtispy/session/<session_code>/players/`
-  - 返回已报名玩家的编号、姓名与登记的 MBTI，用于线下互相核对
-- 查询个人身份：`GET /mbtispy/session/<session_code>/role/<player_id>/`
-  - 返回玩家身份以及本场游戏的spy_mbti
-- 生成对话题目：`POST /mbtispy/question/`
-  - 请求体：`{"spy_mbti": "INTJ"}`，若配置了 `DEEPSEEK_API_KEY`，会调用 DeepSeek 模型生成题目；否则返回占位提示。所使用的 prompt 模板为 `"XXXX"`
-  
-### 投票阶段
-- 主持人开启投票：`POST /mbtispy/session/<session_code>/vote/start/`
-  - 仅在状态为 `ready` 时生效；若状态不符，返回 `success=false`
-- 投票：`GET /mbtispy/session/<session_code>/vote/<player_id>/` 或 `POST /mbtispy/session/<session_code>/vote/<player_id>/`
-  - `GET`：投票开启后返回指定玩家可见的候选列表；若投票未开始则返回 `success=false` 及提示信息
-  - `POST`：请求体可为 `{"vote_for": 1}`（投票某位玩家）或在全员都是 Spy 时使用 `{"vote_for": "all_spies"}`；若投票未开始同样返回 `success=false`
-- 结算：`GET /mbtispy/session/<session_code>/results/`
-  - 若 Spy 玩家被选出，侦探阵营胜利；若 Spy 未被选出（包括平票），Spy 阵营直接胜利
-  - 当全员都是 Spy（同一 MBTI）时，选择 `all_spies` 的 Spy 被判定为胜者，未选择者视为失败；返回字段会包含 `spy_winners` / `spy_losers`
-
-
-可选环境变量（如未设置则使用默认值）：
-- `MBTISPY_LOCK_TIMEOUT`：Redis 分布式锁超时（秒，默认 5）
-- `MBTISPY_LOCK_WAIT`：获取锁的等待时间（秒，默认 5）
-- `MBTISPY_SESSION_LOCK_PREFIX`：锁 key 前缀（默认 `mbtispy:lock:`）
-- `DEEPSEEK_BASE_URL`：DeepSeek API 地址（默认 `https://api.deepseek.com`）
-- `DEEPSEEK_API_KEY`：DeepSeek API Key（默认为空，未配置时题库生成接口仅返回占位信息）
-
-### 本地联调脚本
-
-根目录提供 `simulate_mbtispy_game.py`，可直接向运行中的服务发送 HTTP 请求，模拟完整对局（覆盖平票重投等分支逻辑）。
+### 5.2 本地模拟
 
 ```bash
-# 服务默认监听 http://localhost:8000
-python simulate_mbtispy_game.py
-
-# 自定义服务地址
-python simulate_mbtispy_game.py --base-url http://127.0.0.1:8000
+python simulate_mbtispy_game.py               # 默认 http://localhost:8000
+python simulate_mbtispy_game.py --base-url http://127.0.0.1:9000
 ```
 
-脚本依赖 `requests`，如未安装，可执行：
+---
 
-```bash
-pip install requests
-```
+## 6. Prize 抽奖
+
+- **导入数据**
+  - 管理命令：`python manage.py import_prizes [--csv Resources/stock_data.csv]`
+  - 独立脚本：`python import_prize_csv.py --csv-path Resources/stock_data.csv [--dry-run]`
+- **接口**
+  - `GET /prize/draw/`：获取一件库存大于 0 的奖品（串行加锁保证库存一致）
+  - `GET /prize/list/`：返回所有奖品及库存
+
+---
+
+## 7. MBTI Test（JSON API）
+
+- 基础路径：`http://localhost:8000/mbtitest/`
+- 功能：提供 8 道固定题目，通过 Session 记录答题进度，并在完成后调用 LLM（若已配置）生成类型分析。未配置或调用失败时返回保底结果。
+- 提示：接口依赖 Django Session，建议使用 `curl -c cookies.txt -b cookies.txt` 或其它方式携带 Cookie。
+
+### 接口概览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET /mbtitest/` | 返回 API 状态与关键端点 |
+| `POST /mbtitest/start/` | 初始化测试并返回首题 |
+| `GET /mbtitest/question/<qid>/` | 查看指定题目内容 |
+| `POST /mbtitest/question/<qid>/` | 提交当前题答案，返回下一步信息 |
+| `GET /mbtitest/result/` | 获取最终判定与作答摘要 |
+
+### 示例流程
+
+1. **初始化测试（获取第 0 题）**
+
+   ```bash
+   curl -c cookies.txt -X POST http://localhost:8000/mbtitest/start/ \
+     -H 'Content-Type: application/json'
+   ```
+
+   ```json
+   {
+     "success": true,
+     "session_initialized": true,
+     "next_qid": 0,
+     "question": {
+       "qid": 0,
+       "total": 8,
+       "dimension": "E/I",
+       "question": "在一个陌生的聚会上，你会怎么做？",
+       "options": [
+         "主动去和新朋友聊天",
+         "只和熟悉的人待在一起",
+         "静静地感受氛围"
+       ]
+     }
+   }
+   ```
+
+2. **获取当前题目（GET）**
+
+   ```bash
+   curl -b cookies.txt http://localhost:8000/mbtitest/question/0/
+   ```
+
+   - 返回结构与 `question` 字段一致，便于前端重复拉取题面。
+
+3. **提交答案并获取下一题**
+
+   ```bash
+   curl -b cookies.txt -X POST http://localhost:8000/mbtitest/question/0/ \
+     -H 'Content-Type: application/json' \
+     -d '{"answer": "主动去和新朋友聊天"}'
+   ```
+
+   ```json
+   {
+     "success": true,
+     "completed": false,
+     "answers_count": 1,
+     "next_qid": 1,
+     "question": {
+       "qid": 1,
+       "total": 8,
+       "dimension": "E/I",
+       "question": "周末时你更喜欢哪种活动？",
+       "options": [
+         "参加热闹的社交活动",
+         "独自在家休息或读书",
+         "和一两个亲密朋友小聚"
+       ]
+     }
+   }
+   ```
+
+   - 重复 POST 第 1~7 题；当 `completed` 为 `true` 时，响应将包含 `result_endpoint`，指向 `/mbtitest/result/`。
+
+4. **获取测试结果**
+
+   ```bash
+   curl -b cookies.txt http://localhost:8000/mbtitest/result/
+   ```
+
+   ```json
+   {
+     "success": true,
+     "result": {
+       "mbti": "INFJ",
+       "intro": "理想主义者，善于共情，富有创造力。"
+     },
+     "answers": [
+       "主动去和新朋友聊天",
+       "... 共计 8 项 ..."
+     ],
+     "questions": [
+       {
+         "dimension": "E/I",
+         "question": "在一个陌生的聚会上，你会怎么做？",
+         "selected_answer": "主动去和新朋友聊天"
+       }
+     ]
+   }
+   ```
+
+   - 若未答满 8 题，接口会返回 `{"success": false, "error": "Test not completed."}`，并附 `restart_endpoint`。
+
+---
+
+## 8. 常用脚本与工具
+
+| 脚本 | 作用 | 主要参数 |
+| --- | --- | --- |
+| `import_deepfake_csv.py` | 导入 DeepFake 题库 | `--dataset`、`--table`、`--truncate` |
+| `import_riskhunter_csv.py` | 导入 Risk Hunter 题库 | `--encoding`、`--delimiter`、`--dry-run` |
+| `import_prize_csv.py` | 导入 Prize 奖品列表 | `--csv-path`、`--dry-run` |
+| `simulate_mbtispy_game.py` | 本地模拟 MBTI Spy 对局 | `--base-url` |
+
+所有脚本都会自动读取 `.env` 中的 `DATABASE_URL`；若需要覆盖，可使用 `--database-url` 参数。
+
+---
+
+## 9. 开发建议
+
+- 新增 Django 应用后，别忘更新 `INSTALLED_APPS` 与 `games_backend/urls.py`
+- 运行 `python manage.py check` 确认配置与依赖可用
+- 生产环境请务必：
+  - 使用强随机的 `SECRET_KEY`
+  - 关闭 `DEBUG`
+  - 将 `ALLOWED_HOSTS` 设置为白名单
+  - 配置持久化数据库与 Redis 服务
+
+欢迎在此基础上扩展更多小游戏或接入前端项目。

@@ -60,6 +60,26 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 
+def _csv_list_setting(key, default=""):
+    value = _get_env_setting(key, default)
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+_DEFAULT_TRUSTED_ORIGINS = [
+    "http://127.0.0.1:5000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5001",
+    "http://localhost:5001",
+    "http://150.223.58.162:5001",
+]
+
+CSRF_TRUSTED_ORIGINS = sorted(
+    set(_DEFAULT_TRUSTED_ORIGINS) | set(_csv_list_setting("CSRF_TRUSTED_ORIGINS", ""))
+)
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -73,6 +93,7 @@ INSTALLED_APPS = [
     "riskhunter",
     "mbtispy",
     "prize",
+    "mbtitest",
 ]
 
 MIDDLEWARE = [
@@ -232,5 +253,6 @@ try:
     MBTISPY_LOCK_WAIT = int(_get_env_setting("MBTISPY_LOCK_WAIT", default="5"))
 except (TypeError, ValueError) as exc:
     raise ImproperlyConfigured("MBTISPY lock settings must be integers.") from exc
-DEEPSEEK_BASE_URL = _get_env_setting("DEEPSEEK_BASE_URL", default="https://api.deepseek.com")
-DEEPSEEK_API_KEY = _get_env_setting("DEEPSEEK_API_KEY", default="")
+LLM_BASE_URL = _get_env_setting("LLM_BASE_URL", default="https://api.deepseek.com")
+LLM_API_KEY = _get_env_setting("LLM_API_KEY", default="")
+LLM_MODEL = _get_env_setting("LLM_MODEL", default="deepseek-chat")

@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 import string
 import time
@@ -9,10 +10,16 @@ import xml.etree.ElementTree as ET
 import redis
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.db import DatabaseError
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from games_backend.llm_client import call_llm
+
+from .models import PlayerMBTIRecord
+
+logger = logging.getLogger(__name__)
 
 SESSION_PREFIX = getattr(settings, "MBTISPY_SESSION_PREFIX", "mbtispy:session:")
 SESSION_TTL = getattr(settings, "MBTISPY_SESSION_TTL", 2 * 60 * 60)
@@ -20,10 +27,6 @@ SESSION_LOCK_PREFIX = getattr(settings, "MBTISPY_SESSION_LOCK_PREFIX", "mbtispy:
 SESSION_LOCK_TIMEOUT = getattr(settings, "MBTISPY_LOCK_TIMEOUT", 5)
 SESSION_LOCK_WAIT = getattr(settings, "MBTISPY_LOCK_WAIT", 5)
 MBTI_LETTERS = {"I", "E", "S", "N", "T", "F", "P", "J"}
-
-DEEPSEEK_BASE_URL = getattr(settings, "DEEPSEEK_BASE_URL", None)
-DEEPSEEK_API_KEY = getattr(settings, "DEEPSEEK_API_KEY", None)
-
 
 class GameStateError(Exception):
     """Raised when the game state is invalid or violates game rules."""
@@ -67,6 +70,11 @@ def _parse_body(request) -> Dict[str, Any]:
         raise GameStateError(f"Request body is not valid JSON: {exc}")
 
 
+def _strict_bool(value: Any) -> bool:
+    """Return True only if value is the boolean True; everything else is False."""
+    return value is True
+
+
 def _json_error(message: str, status: int = 400) -> JsonResponse:
     return JsonResponse({"success": False, "error": message}, status=status)
 
@@ -97,7 +105,7 @@ def _generate_code(client: redis.Redis, length: int = 6) -> str:
 
 
 def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
-    prompt = r'''
+    sys_prompt = r'''
     <example>
     [
         {
@@ -130,47 +138,61 @@ def _generate_spy_question(spy_mbti: str) -> Dict[str, str]:
         }
     ]
     </example>
-    你是游戏主持人题库助手。请根据输入，生成用于辨析 MBTI 的“情景化开放式问题”。
-    要求：
-    1) 每题围绕一个 MBTI 维度（axis in {EI,SN,TF,JP}），但不要直接出现“E/I/S/N/T/F/J/P”字样。
-    2) 问题必须是“情境+任务”的开放式描述，让玩家讲述做法/理由/取舍过程，避免AB二选。
-    3) 语言贴近口语，结合行业/场景口吻。
-    4) 不得提到“MBTI”“维度”“轴”等词。
-    5) 尽量与历史题去重，变化场景、人物、约束。
-    6) 返回 JSON 数组，每项包含：
-    id（string），title（string），scene（string），ask（string），axis（string）。
-    只输出 JSON 数组。
-    '''
+    你是一位心理博弈类游戏主持人，正在主持《MBTI守护大挑战》。
+    游戏规则：
+    - 本局共有3位玩家，每位玩家都有自己的MBTI类型。
+    - 其中一位玩家的MBTI类型被隐藏，是“隐藏者”。
+    - 你要根据三位玩家的MBTI，生成4个高区分度的开放式情境问题。
+    - 问题必须能引导玩家自然展现各自MBTI的差异，使其他人有机会推理出隐藏者是谁。
 
-    if DEEPSEEK_BASE_URL and DEEPSEEK_API_KEY:
-        try:
-            from openai import OpenAI
+    出题要求：
+    1. 共生成4个问题，分别聚焦在 MBTI 的四个维度：
+    - EI（外向 vs 内向）
+    - SN（实感 vs 直觉）
+    - TF（理性 vs 情感）
+    - JP（计划 vs 随性）
+    2. 每个问题都要是「生活化」「有代入感」的情境题。
+    3. 问题不能直接提及“MBTI”、“人格”、“类型”或“性格”。
+    4. 每个问题用自然中文表达，控制在1~2句话，20个字。
+    5. 设计的问题应能让隐藏者在回答时“露出特征”，例如：
+    - E/I 维度：在社交、聚会或发言场景下；
+    - S/N 维度：在规划、创造或未知任务下；
+    - T/F 维度：在团队冲突或情绪决策下；
+    - J/P 维度：在突发变化或计划执行下。
+    6. 输出时，请使用 JSON 数组格式，每题包含：
+    - id（1~4）
+    - title（简短主题）
+    - scene（描述情境）
+    - ask（玩家要回答的问题）
+    - axis（维度代码）
+'''
+    user_prompt = '''
+    隐藏者的MBTI类型：{{hidden_mbti}}
+    请根据以上三位玩家的MBTI类型与隐藏MBTI，
+    生成4个能在回答中暴露{{hidden_mbti}}特征的开放式生活情境问题。
+    每个问题应聚焦在不同的MBTI维度（EI、SN、TF、JP）。
 
-            client = OpenAI(
-                base_url=DEEPSEEK_BASE_URL,
-                api_key=DEEPSEEK_API_KEY,
-            )
-            response = client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": '目标MBTI：'+ spy_mbti},
-                ],
-                stream=False,
-                response_format={
-                    'type': 'json_object'
-                }
-            )
-            answer = response.choices[0].message.content
-            return {"success": True, "question": answer}
-        except Exception as exc:
-            return {
-                "success": False,
-                "message": f"Failed to reach DeepSeek ({exc}). Please try again later.",
-            }
+    - 若隐藏MBTI为E/I类型 → 优先让第1题区分明显。
+    - 若隐藏MBTI为S/N类型 → 在第2题体现抽象思维差异。
+    - 若隐藏MBTI为T/F类型 → 在第3题聚焦情绪反应。
+    - 若隐藏MBTI为J/P类型 → 在第4题表现计划与即兴反应差异。
+    请用中文回答
+    '''.format(hidden_mbti=spy_mbti)
+
+    llm_response = call_llm(
+        [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    if llm_response.get("success"):
+        return {"success": True, "question": llm_response.get("content", "")}
+
     return {
         "success": False,
-        "message": f"Could not find base url or api key of Deepseek.",
+        "message": llm_response.get("error") or "Language model service is unavailable. Please try again later.",
     }
 
 def _parse_questions(answer: str) -> List[Dict[str, Any]]:
@@ -285,6 +307,8 @@ def register_player(request, client: redis.Redis, code: str) -> JsonResponse:
     session_code = code or payload.get("session_code")
     player_name = payload.get("player_name")
     mbti = payload.get("mbti")
+    department_raw = payload.get("department")
+    consent_flag = payload.get("save_mbti")
 
     if not session_code:
         raise GameStateError("session_code is required.")
@@ -295,8 +319,16 @@ def register_player(request, client: redis.Redis, code: str) -> JsonResponse:
         raise GameStateError("Player name must not be empty.")
     if len(player_name.strip()) == 0:
         raise GameStateError("Player name must not be empty.")
+    if department_raw is None:
+        raise GameStateError("Department is required.")
+    if not isinstance(department_raw, str):
+        raise GameStateError("Department must be a string.")
+    department_clean = department_raw.strip()
+    if not department_clean:
+        raise GameStateError("Department must not be empty.")
     mbti_value = _normalize_mbti(mbti)
     player_name_clean = player_name.strip()
+    store_mbti = _strict_bool(consent_flag)
     player_id = None
     player_record: Dict[str, Any] = {}
 
@@ -320,10 +352,29 @@ def register_player(request, client: redis.Redis, code: str) -> JsonResponse:
             "name": player_name_clean,
             "mbti": mbti_value,
             "role": "unknown",
+            "department": department_clean,
+            "consent_save_mbti": store_mbti,
         }
         players.append(player)
         player_record = player
         _save_session(client, session)
+
+    if store_mbti:
+        try:
+            PlayerMBTIRecord.objects.create(
+                session_code=session_code,
+                player_name=player_name_clean,
+                department=department_clean,
+                mbti=mbti_value,
+                consent=True,
+            )
+        except DatabaseError as exc:
+            logger.warning(
+                "Failed to persist MBTI record for %s in session %s: %s",
+                player_name_clean,
+                session_code,
+                exc,
+            )
 
     return JsonResponse(
         {
@@ -335,6 +386,8 @@ def register_player(request, client: redis.Redis, code: str) -> JsonResponse:
             "roles_assigned": bool(session.get("spy_mbti")),
             "spy_mbti": session.get("spy_mbti"),
             "expected_players": session["expected_players"],
+            "department": department_clean,
+            "consent_save_mbti": store_mbti,
         }
     )
 
@@ -540,8 +593,9 @@ def vote_endpoint(
             for candidate in players
             if candidate["id"] != player["id"]
         ]
-        if player["role"] == "spy":
-            options.append({"id": "all_spies", "name": "All players are spies"})
+        # if player["role"] == "spy":
+            # options.append({"id": "都是隐藏者", "name": "场上所有玩家都是隐藏者！"})
+        options.append({"id": "都是隐藏者", "name": "场上所有玩家都是隐藏者！"})
         return JsonResponse(
             {
                 "success": True,
@@ -715,7 +769,7 @@ def generate_spy_question(request, client: redis.Redis) -> JsonResponse:  # noqa
     spy_mbti_input = payload.get("spy_mbti")
     spy_mbti = _normalize_mbti(spy_mbti_input)
     generated = _generate_spy_question(spy_mbti)
-    json_question = _parse_questions(generated['question'])
+    print(generated)
 
     if generated['success']:
         try:
@@ -723,15 +777,10 @@ def generate_spy_question(request, client: redis.Redis) -> JsonResponse:  # noqa
                 {
                     "success": True,
                     "spy_mbti": spy_mbti,
-                    "question": json_question,
+                    "question": _parse_questions(generated['question']),
                 }
             )        
         except json.JSONDecodeError as exc:
             return _json_error(f"Failed to decode generated question: {exc}, {generated['question']}")
     else:
-        return JsonResponse(
-            {
-                "success": False,
-                "message": generated["message"],
-            }
-        )
+        return _json_error(f"Failed to generate question:, {generated['message']}")

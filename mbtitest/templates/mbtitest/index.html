@@ -1,0 +1,115 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MBTI 性格测试</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+        body {
+            text-align: center;
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #4198B4;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        .content {
+            flex: 1;
+            padding: 20px;
+            z-index: 1;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            margin-top: 50px;
+            font-size: 3.3rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        p {
+            color: white;
+            margin: 20px 0;
+            font-size: 1.5rem;
+            line-height: 1.6;
+            font-weight: 400;
+        }
+
+        button {
+            padding: 14px 32px;
+            font-size: 1.5rem;
+            font-weight: 500;
+            background-color: white;
+            color: #4198B4;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            font-family: inherit;
+            margin-top: 2rem;
+        }
+
+        button:hover {
+            background-color: #f8f8f8;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .background-image {
+            width: 100%;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            z-index: 0;
+        }
+
+        .loading-text {
+            color: rgb(194, 190, 190);
+            margin-top: 1rem;
+            display: none;
+            font-size: 0.8rem;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="content">
+        <h1>MBTI 性格测试</h1>
+        <p>点击开始测试，回答 8 个问题，AI 将帮你推测 MBTI 类型。</p>
+        <a href="{% url 'mbtitest:start' %}" onclick="showLoading()">
+            <button id="startButton">开始测试</button>
+        </a>
+        <p id="loadingText" class="loading-text">加载中，请耐心等待...</p>
+    </div>
+    <img src="{% static 'mbtitest/background.png' %}" alt="背景图片" class="background-image">
+
+    <script>
+        function showLoading() {
+            const button = document.getElementById('startButton');
+            const loadingText = document.getElementById('loadingText');
+            if (button) {
+                button.disabled = true;
+            }
+            if (loadingText) {
+                loadingText.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>
+

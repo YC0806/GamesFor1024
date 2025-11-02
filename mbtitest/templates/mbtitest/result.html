@@ -1,0 +1,106 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MBTI 测试结果</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+        body {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #4198B4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        .result-container {
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 40px 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+            z-index: 1;
+        }
+
+        h1 {
+            font-size: 2rem;
+            color: #4198B4;
+            margin-bottom: 20px;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .sticker-image {
+            width: 180px;
+            height: 180px;
+            object-fit: contain;
+            margin: 20px 0;
+        }
+
+        p {
+            font-size: 1.1rem;
+            color: #333;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            font-weight: 400;
+        }
+
+        button {
+            padding: 14px 32px;
+            font-size: 1rem;
+            font-weight: 500;
+            background-color: #4198B4;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            font-family: inherit;
+            margin-top: 1rem;
+        }
+
+        button:hover {
+            background-color: #357A91;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .background-image {
+            width: 100%;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            z-index: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="result-container">
+        <h1>你的 MBTI 类型是：{{ result.mbti }}</h1>
+
+        <img src="{% static sticker_path %}"
+             alt="{{ result.mbti }} 类型贴纸"
+             class="sticker-image">
+
+        <p>{{ result.intro }}</p>
+        <a href="{% url 'mbtitest:index' %}"><button>重新测试</button></a>
+    </div>
+    <img src="{% static 'mbtitest/background.png' %}" alt="背景图片" class="background-image">
+</body>
+</html>
+

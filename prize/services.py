@@ -31,7 +31,8 @@ def draw_prize() -> DrawResult:
         if count == 0:
             raise PrizeUnavailableError("No prize with remaining stock is available.")
 
-        index = random.randint(0, count - 1)
+        index = random.choice(list(range(count)))
+        # index = 0
         prize = candidates[index]
 
         Prize.objects.filter(id=prize.id).update(stock=F("stock") - 1)

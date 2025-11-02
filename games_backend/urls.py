@@ -26,6 +26,7 @@ urlpatterns = [
     path("riskhunter/", include("riskhunter.urls")),
     path("mbtispy/", include("mbtispy.urls")),
     path("prize/", include("prize.urls")),
+    path("mbtitest/", include("mbtitest.urls")),
 ]
 
 if settings.DEBUG:
